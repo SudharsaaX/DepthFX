@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Model files
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+*.bin
+
+# Large media
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Project-generated files
+logs/
+outputs/
+results/
+benchmarks/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Python test/cache
+.pytest_cache/
+.coverage
+htmlcov/
