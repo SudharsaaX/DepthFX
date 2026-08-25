@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import ctypes
+from datetime import datetime
+from pathlib import Path
 
 import cv2
 import glfw
@@ -353,6 +355,39 @@ class GPUTimer:
             pass
 
 
+def save_screenshot(window):
+    try:
+        width, height = glfw.get_framebuffer_size(window)
+        if width <= 0 or height <= 0:
+            return
+
+        gl_pixels = GL.glReadPixels(
+            0, 0, width, height, GL.GL_RGB, GL.GL_UNSIGNED_BYTE
+        )
+        image = np.frombuffer(gl_pixels, dtype=np.uint8).reshape((height, width, 3))
+        image = np.flipud(image)
+        bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        outputs_dir = Path("outputs")
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now()
+        base_name = now.strftime("depthfx_%Y%m%d_%H%M%S")
+        filepath = outputs_dir / f"{base_name}.png"
+        counter = 1
+        while filepath.exists():
+            filepath = outputs_dir / f"{base_name}_{counter}.png"
+            counter += 1
+
+        success = cv2.imwrite(str(filepath), bgr_image)
+        if success:
+            print(f"Screenshot saved: {filepath.as_posix()}")
+        else:
+            print(f"Screenshot failed: cv2.imwrite returned False")
+    except Exception as error:
+        print(f"Screenshot failed: {error}")
+
+
 def create_shader_program():
     vertex_shader = shaders.compileShader(VERTEX_SHADER, GL.GL_VERTEX_SHADER)
     fragment_shader = shaders.compileShader(FRAGMENT_SHADER, GL.GL_FRAGMENT_SHADER)
@@ -547,17 +582,20 @@ def main():
     lighting_enabled = True
     effect_level = 2
     display_mode = 0
+    take_screenshot = False
     mouse_x = 0.5
     mouse_y = 0.5
 
     def key_callback(window_handle, key, scancode, action, mods):
-        nonlocal fog_enabled, blur_enabled, effect_level, display_mode
+        nonlocal fog_enabled, blur_enabled, effect_level, display_mode, take_screenshot
 
         if action != glfw.PRESS:
             return
 
         if key == glfw.KEY_Q:
             glfw.set_window_should_close(window_handle, True)
+        elif key == glfw.KEY_S:
+            take_screenshot = True
         elif key == glfw.KEY_D:
             display_mode = (display_mode + 1) % 3
             print(f"Display: {DISPLAY_MODES[display_mode]}")
@@ -615,6 +653,7 @@ def main():
     print()
     print("Controls:")
     print("  D = cycle display mode (NORMAL / DEPTH / HEATMAP)")
+    print("  S = capture screenshot")
     print("  F = toggle fog")
     print("  B = toggle blur")
     print("  1 = light effects")
@@ -779,6 +818,10 @@ def main():
                 gpu_timer.end()
 
             GL.glUseProgram(0)
+
+            if take_screenshot:
+                save_screenshot(window)
+                take_screenshot = False
 
             glfw.swap_buffers(window)
 
