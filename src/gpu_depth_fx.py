@@ -103,6 +103,7 @@ uniform int u_fog_enabled;
 uniform int u_blur_enabled;
 uniform int u_lighting_enabled;
 uniform int u_display_mode;
+uniform int u_bg_blur_enabled;
 
 uniform float u_time;
 
@@ -174,6 +175,49 @@ vec3 depthAwareBlur(vec2 uv, vec3 original, float depth)
     return mix(original, blurred, blurFactor);
 }
 
+vec3 applyBackgroundBlur(vec2 uv, vec3 color, float depth)
+{
+    if (u_bg_blur_enabled == 0)
+    {
+        return color;
+    }
+
+    float distanceValue = 1.0 - depth;
+    float bgFactor = smoothstep(0.25, 0.75, distanceValue);
+    bgFactor *= u_blur_strength;
+    bgFactor = clamp(bgFactor, 0.0, 1.0);
+
+    if (bgFactor <= 0.001)
+    {
+        return color;
+    }
+
+    float radius = 1.0 + bgFactor * 4.0;
+    vec3 sum = color * 0.30;
+    float weight = 0.30;
+
+    for (int i = 1; i <= 4; i++)
+    {
+        float fi = float(i);
+        float offset = fi * radius;
+
+        vec2 horizontal = vec2(offset * u_texel_size.x, 0.0);
+        vec2 vertical = vec2(0.0, offset * u_texel_size.y);
+
+        float sampleWeight = 1.0 / (1.0 + fi * 0.45);
+
+        sum += getColor(uv + horizontal) * sampleWeight;
+        sum += getColor(uv - horizontal) * sampleWeight;
+        sum += getColor(uv + vertical) * sampleWeight;
+        sum += getColor(uv - vertical) * sampleWeight;
+
+        weight += sampleWeight * 4.0;
+    }
+
+    vec3 blurred = sum / weight;
+    return mix(color, blurred, bgFactor);
+}
+
 float depthEdge(vec2 uv)
 {
     float center = getDepth(uv);
@@ -241,6 +285,7 @@ void main()
 
     vec3 color = getColor(uv);
     color = depthAwareBlur(uv, color, depth);
+    color = applyBackgroundBlur(uv, color, depth);
     color = applyLighting(color, depth, uv);
     float edge = depthEdge(uv);
     color += edge * 0.035;
@@ -566,6 +611,7 @@ def main():
     u_light_strength = GL.glGetUniformLocation(program, "u_light_strength")
     u_ambient_strength = GL.glGetUniformLocation(program, "u_ambient_strength")
     u_display_mode = GL.glGetUniformLocation(program, "u_display_mode")
+    u_bg_blur_enabled = GL.glGetUniformLocation(program, "u_bg_blur_enabled")
     u_time = GL.glGetUniformLocation(program, "u_time")
 
     if u_color >= 0:
@@ -582,12 +628,13 @@ def main():
     lighting_enabled = True
     effect_level = 2
     display_mode = 0
+    bg_blur_enabled = False
     take_screenshot = False
     mouse_x = 0.5
     mouse_y = 0.5
 
     def key_callback(window_handle, key, scancode, action, mods):
-        nonlocal fog_enabled, blur_enabled, effect_level, display_mode, take_screenshot
+        nonlocal fog_enabled, blur_enabled, effect_level, display_mode, bg_blur_enabled, take_screenshot
 
         if action != glfw.PRESS:
             return
@@ -596,6 +643,9 @@ def main():
             glfw.set_window_should_close(window_handle, True)
         elif key == glfw.KEY_S:
             take_screenshot = True
+        elif key == glfw.KEY_P:
+            bg_blur_enabled = not bg_blur_enabled
+            print(f"Background blur: {'ON' if bg_blur_enabled else 'OFF'}")
         elif key == glfw.KEY_D:
             display_mode = (display_mode + 1) % 3
             print(f"Display: {DISPLAY_MODES[display_mode]}")
@@ -619,6 +669,7 @@ def main():
             fog_enabled = True
             blur_enabled = True
             display_mode = 0
+            bg_blur_enabled = False
             print("DepthFX settings reset.")
 
     def cursor_callback(window_handle, xpos, ypos):
@@ -653,6 +704,7 @@ def main():
     print()
     print("Controls:")
     print("  D = cycle display mode (NORMAL / DEPTH / HEATMAP)")
+    print("  P = toggle background blur")
     print("  S = capture screenshot")
     print("  F = toggle fog")
     print("  B = toggle blur")
@@ -804,6 +856,9 @@ def main():
 
             if u_display_mode >= 0:
                 GL.glUniform1i(u_display_mode, display_mode)
+
+            if u_bg_blur_enabled >= 0:
+                GL.glUniform1i(u_bg_blur_enabled, int(bg_blur_enabled))
 
             if u_time >= 0:
                 GL.glUniform1f(u_time, float(time.perf_counter()))
