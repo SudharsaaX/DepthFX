@@ -26,6 +26,12 @@ AI_SIZE = 320
 DEPTH_UPDATE_INTERVAL = 2
 DEPTH_SMOOTHING = 0.65
 
+DISPLAY_MODES = {
+    0: "NORMAL",
+    1: "DEPTH",
+    2: "HEATMAP",
+}
+
 EFFECTS = {
     1: {
         "fog_strength": 0.30,
@@ -94,6 +100,7 @@ uniform vec2 u_texel_size;
 uniform int u_fog_enabled;
 uniform int u_blur_enabled;
 uniform int u_lighting_enabled;
+uniform int u_display_mode;
 
 uniform float u_time;
 
@@ -105,6 +112,21 @@ float getDepth(vec2 uv)
 vec3 getColor(vec2 uv)
 {
     return texture(u_color, uv).rgb;
+}
+
+vec3 depthHeatmap(float depth)
+{
+    float d = clamp(depth, 0.0, 1.0);
+    vec3 color;
+    if (d < 0.5)
+    {
+        color = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), d * 2.0);
+    }
+    else
+    {
+        color = mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (d - 0.5) * 2.0);
+    }
+    return color;
 }
 
 vec3 depthAwareBlur(vec2 uv, vec3 original, float depth)
@@ -201,10 +223,21 @@ vec3 applyFog(vec3 color, float depth)
 void main()
 {
     vec2 uv = v_texcoord;
-    vec3 color = getColor(uv);
     float depth = getDepth(uv);
     depth = clamp(depth, 0.0, 1.0);
 
+    if (u_display_mode == 1)
+    {
+        FragColor = vec4(vec3(depth), 1.0);
+        return;
+    }
+    else if (u_display_mode == 2)
+    {
+        FragColor = vec4(depthHeatmap(depth), 1.0);
+        return;
+    }
+
+    vec3 color = getColor(uv);
     color = depthAwareBlur(uv, color, depth);
     color = applyLighting(color, depth, uv);
     float edge = depthEdge(uv);
@@ -283,8 +316,6 @@ class GPUTimer:
             if available_array.size == 0 or int(available_array[0]) == 0:
                 return self.last_ms
 
-            # Use standard OpenGL unsigned int query (glGetQueryObjectuiv)
-            # to avoid GL_UNSIGNED_INT64_AMD driver compatibility issues.
             result = GL.glGetQueryObjectuiv(
                 int(self.query), GL.GL_QUERY_RESULT
             )
@@ -499,6 +530,7 @@ def main():
     u_light_position = GL.glGetUniformLocation(program, "u_light_position")
     u_light_strength = GL.glGetUniformLocation(program, "u_light_strength")
     u_ambient_strength = GL.glGetUniformLocation(program, "u_ambient_strength")
+    u_display_mode = GL.glGetUniformLocation(program, "u_display_mode")
     u_time = GL.glGetUniformLocation(program, "u_time")
 
     if u_color >= 0:
@@ -514,17 +546,21 @@ def main():
     blur_enabled = True
     lighting_enabled = True
     effect_level = 2
+    display_mode = 0
     mouse_x = 0.5
     mouse_y = 0.5
 
     def key_callback(window_handle, key, scancode, action, mods):
-        nonlocal fog_enabled, blur_enabled, effect_level
+        nonlocal fog_enabled, blur_enabled, effect_level, display_mode
 
         if action != glfw.PRESS:
             return
 
         if key == glfw.KEY_Q:
             glfw.set_window_should_close(window_handle, True)
+        elif key == glfw.KEY_D:
+            display_mode = (display_mode + 1) % 3
+            print(f"Display: {DISPLAY_MODES[display_mode]}")
         elif key == glfw.KEY_F:
             fog_enabled = not fog_enabled
             print("Fog:", "ON" if fog_enabled else "OFF")
@@ -544,6 +580,7 @@ def main():
             effect_level = 2
             fog_enabled = True
             blur_enabled = True
+            display_mode = 0
             print("DepthFX settings reset.")
 
     def cursor_callback(window_handle, xpos, ypos):
@@ -577,6 +614,7 @@ def main():
     print("Starting optimized DepthFX...")
     print()
     print("Controls:")
+    print("  D = cycle display mode (NORMAL / DEPTH / HEATMAP)")
     print("  F = toggle fog")
     print("  B = toggle blur")
     print("  1 = light effects")
@@ -725,6 +763,9 @@ def main():
             if u_ambient_strength >= 0:
                 GL.glUniform1f(u_ambient_strength, settings["ambient"])
 
+            if u_display_mode >= 0:
+                GL.glUniform1i(u_display_mode, display_mode)
+
             if u_time >= 0:
                 GL.glUniform1f(u_time, float(time.perf_counter()))
 
@@ -756,7 +797,8 @@ def main():
                     f"DepthFX | "
                     f"{fps:.1f} FPS | "
                     f"AI {displayed_ai_ms:.1f} ms | "
-                    f"GPU {gpu_ms:.3f} ms"
+                    f"GPU {gpu_ms:.3f} ms | "
+                    f"{DISPLAY_MODES[display_mode]}"
                 )
                 glfw.set_window_title(window, title)
                 title_start = now
