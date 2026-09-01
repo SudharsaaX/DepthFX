@@ -59,10 +59,12 @@ DepthFX/
 ├── assets/
 │   ├── images/
 │   │   ├── DepthFX_CoverImage.png          # High-resolution project cover banner (1.47 MB)
-│   │   ├── depth_test.jpg                  # Real-time triple-view screenshot (410 KB)
+│   │   ├── depth_test.jpeg                 # Real-time triple-view screenshot (3456×2160, 1.18 MB)
 │   │   ├── depth_test_.png                 # Depth heatmap visualization example (114 KB)
 │   │   └── sample.png                      # Visual effects & depth estimation sample (1.57 MB)
 │   └── videos/
+│       ├── demo.gif                        # Animated live demonstration preview (1.57 MB)
+│       ├── demo.webp                       # Lightweight WebP animation preview (672 KB)
 │       └── InShot_20260902_015848586.mp4   # Real-time live demo recording (31.2 MB)
 │
 ├── checkpoints/
@@ -570,9 +572,11 @@ The `.gitignore` correctly prevents large binary files (model weights, videos) a
 ## 46. Assets
 
 - `assets/images/DepthFX_CoverImage.png` (1.47 MB) — high-resolution project cover banner
-- `assets/images/depth_test.jpg` (410 KB) — real-time triple-view live pipeline screenshot used in README documentation
+- `assets/images/depth_test.jpeg` (1.18 MB) — real-time triple-view live pipeline screenshot used in README documentation
 - `assets/images/depth_test_.png` (114 KB) — depth heatmap visualization example
 - `assets/images/sample.png` (1.57 MB) — visual effects and depth estimation sample showcase
+- `assets/videos/demo.gif` (1.57 MB) — animated live demonstration preview looping directly in README
+- `assets/videos/demo.webp` (672 KB) — lightweight WebP animation preview
 - `assets/videos/InShot_20260902_015848586.mp4` (31.2 MB) — live demonstration video showing real-time AI depth estimation and depth-driven effects
 
 ## 47. Outputs

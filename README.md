@@ -11,16 +11,23 @@ The project offers **two complementary deployment interfaces**:
 **Depth Anything V2 Small** runs on **PyTorch + CUDA with FP16 autocast** to produce per-frame depth maps at $320\times 320$ resolution in ~10–15 ms on an RTX 4070.
 
 <p align="center">
-  <video src="assets/videos/InShot_20260902_015848586.mp4" width="100%" controls="controls" autoplay loop muted playsinline style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+  <img src="assets/videos/demo.gif" alt="DepthFX Real-Time Live Demo Animation" width="100%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+</p>
+
+<p align="center">
+  <strong>🎥 Live Project Demonstration:</strong> <em>Real-Time AI Monocular Depth Estimation &amp; Depth-Aware Visual Effects (30 FPS · 1440×1080)</em>
+</p>
+
+<p align="center">
+  <video src="https://github.com/SudharsaaX/DepthFX/raw/main/assets/videos/InShot_20260902_015848586.mp4" width="100%" controls="controls" playsinline style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+    <source src="https://github.com/SudharsaaX/DepthFX/raw/main/assets/videos/InShot_20260902_015848586.mp4" type="video/mp4">
     <source src="assets/videos/InShot_20260902_015848586.mp4" type="video/mp4">
-    <a href="assets/videos/InShot_20260902_015848586.mp4">▶ Click to Watch Project Demo Video (MP4)</a>
+    <a href="https://github.com/SudharsaaX/DepthFX/raw/main/assets/videos/InShot_20260902_015848586.mp4">▶ Click to Watch / Download Full Demo Video (MP4)</a>
   </video>
 </p>
 
 <p align="center">
-  <strong>🎥 Project Live Demo:</strong> <em>Real-Time AI Monocular Depth Estimation &amp; Depth-Aware Visual Effects in Action (30 FPS · 1440×1080)</em>
-  <br>
-  <sub>Direct file: <a href="assets/videos/InShot_20260902_015848586.mp4"><code>assets/videos/InShot_20260902_015848586.mp4</code></a></sub>
+  <sub>Direct video file: <a href="https://github.com/SudharsaaX/DepthFX/raw/main/assets/videos/InShot_20260902_015848586.mp4"><code>assets/videos/InShot_20260902_015848586.mp4</code></a></sub>
 </p>
 
 ---
@@ -37,7 +44,7 @@ The project offers **two complementary deployment interfaces**:
 ## Live Dashboard & Pipeline Preview
 
 <p align="center">
-  <img src="assets/images/depth_test.jpg" alt="DepthFX Real-Time Pipeline — Camera Effects, Depth Map, and Thermal Heatmap" width="100%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+  <img src="assets/images/depth_test.jpeg" alt="DepthFX Real-Time Pipeline — Camera Effects, Depth Map, and Thermal Heatmap" width="100%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
 </p>
 
 <p align="center">
@@ -215,11 +222,13 @@ DepthFX/
 ├── assets/
 │   ├── images/
 │   │   ├── DepthFX_CoverImage.png  # High-resolution project cover banner
-│   │   ├── depth_test.jpg          # Real-time triple-view live pipeline screenshot
+│   │   ├── depth_test.jpeg         # Real-time triple-view live pipeline screenshot (3456×2160)
 │   │   ├── depth_test_.png         # Depth heatmap visualization example
 │   │   └── sample.png              # Visual effects & depth estimation sample showcase
 │   └── videos/
-│       └── InShot_20260902_015848586.mp4 # Real-time live demo recording
+│       ├── demo.gif                # Animated live demonstration preview
+│       ├── demo.webp               # Lightweight WebP animation preview
+│       └── InShot_20260902_015848586.mp4 # Real-time live demo recording (1440×1080)
 ├── checkpoints/
 │   └── depth_anything_v2_vits.pth  # Model weights (git-ignored)
 ├── outputs/                        # Saved snapshots (git-ignored)
