@@ -10,10 +10,6 @@ The project offers **two complementary deployment interfaces**:
 
 **Depth Anything V2 Small** runs on **PyTorch + CUDA with FP16 autocast** to produce per-frame depth maps at $320\times 320$ resolution in ~10–15 ms on an RTX 4070.
 
-![DepthFX — depth heatmap visualization](assets/images/depth_test.png)
-
-*Heatmap display mode — false-colour depth visualization.*
-
 ---
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
@@ -22,6 +18,28 @@ The project offers **two complementary deployment interfaces**:
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.42-FF4B4B?style=flat&logo=streamlit&logoColor=white)
 ![OpenGL](https://img.shields.io/badge/OpenGL-3.3_core-5586A4?style=flat&logo=opengl)
 ![OpenCV](https://img.shields.io/badge/OpenCV-5.0-5C3EE8?style=flat&logo=opencv&logoColor=white)
+
+---
+
+## Live Demo & Pipeline Preview
+
+<p align="center">
+  <video src="assets/videos/InShot_20260902_015848586.mp4" width="100%" controls autoplay loop muted playsinline>
+    <a href="assets/videos/InShot_20260902_015848586.mp4">Watch DepthFX Demo Video</a>
+  </video>
+</p>
+
+<p align="center">
+  <em>DepthFX Live Demonstration — Real-Time Monocular Depth Estimation &amp; Depth-Aware Visual Effects.</em>
+</p>
+
+<p align="center">
+  <img src="assets/images/depth_test.jpg" alt="DepthFX Real-Time Pipeline — Camera Effects, Depth Map, and Thermal Heatmap" width="100%">
+</p>
+
+<p align="center">
+  <em>DepthFX Real-Time Triple-View Pipeline — Live Camera &amp; Visual Effects (left), Grayscale Depth Map (center), and Thermal Heatmap (right).</em>
+</p>
 
 ---
 
@@ -193,8 +211,12 @@ DepthFX/
 │   └── config.toml                 # Streamlit theme and server configuration
 ├── assets/
 │   ├── images/
-│   │   └── depth_test.png          # Depth heatmap example
-│   └── videos/                     # Demo recordings
+│   │   ├── DepthFX_CoverImage.png  # High-resolution project cover banner
+│   │   ├── depth_test.jpg          # Real-time triple-view live pipeline screenshot
+│   │   ├── depth_test_.png         # Depth heatmap visualization example
+│   │   └── sample.png              # Visual effects & depth estimation sample showcase
+│   └── videos/
+│       └── InShot_20260902_015848586.mp4 # Real-time live demo recording
 ├── checkpoints/
 │   └── depth_anything_v2_vits.pth  # Model weights (git-ignored)
 ├── outputs/                        # Saved snapshots (git-ignored)

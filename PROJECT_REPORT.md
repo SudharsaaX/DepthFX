@@ -58,8 +58,12 @@ DepthFX/
 │
 ├── assets/
 │   ├── images/
-│   │   └── depth_test.png                  # Heatmap screenshot (114 KB)
-│   └── videos/                             # Empty directory
+│   │   ├── DepthFX_CoverImage.png          # High-resolution project cover banner (1.47 MB)
+│   │   ├── depth_test.jpg                  # Real-time triple-view screenshot (410 KB)
+│   │   ├── depth_test_.png                 # Depth heatmap visualization example (114 KB)
+│   │   └── sample.png                      # Visual effects & depth estimation sample (1.57 MB)
+│   └── videos/
+│       └── InShot_20260902_015848586.mp4   # Real-time live demo recording (31.2 MB)
 │
 ├── checkpoints/
 │   └── depth_anything_v2_vits.pth          # Model weights (~94.6 MB, git-ignored)
@@ -136,7 +140,7 @@ DepthFX/
 | `fullscreen.vert` | External GLSL vertex shader (present but **not loaded** by the main application, which uses inline shaders). |
 | `checkpoints/` | Holds the ~94.6 MB model weights file `depth_anything_v2_vits.pth`. |
 | `outputs/` | Runtime screenshots saved by `save_screenshot()` (OpenGL) or Snapshot button (Streamlit). |
-| `assets/images/` | Contains `depth_test.png` — a depth heatmap example used in the README. |
+| `assets/images/` | Contains `depth_test.jpg` — real-time triple-view live pipeline screenshot used in the README. |
 | `archive/old_experiments/` | Superseded code from development iteration — CPU-based effects, modular GPU experiments, standalone test scripts, old separate GLSL shader files. |
 | `tests/` | **Empty.** No automated tests exist. |
 | `scripts/` | **Empty.** Reserved for future utility scripts. |
@@ -565,8 +569,11 @@ The `.gitignore` correctly prevents large binary files (model weights, videos) a
 
 ## 46. Assets
 
-- `assets/images/depth_test.png` (114 KB) — a depth heatmap screenshot used in README documentation
-- `assets/videos/` — empty directory, reserved for demo videos
+- `assets/images/DepthFX_CoverImage.png` (1.47 MB) — high-resolution project cover banner
+- `assets/images/depth_test.jpg` (410 KB) — real-time triple-view live pipeline screenshot used in README documentation
+- `assets/images/depth_test_.png` (114 KB) — depth heatmap visualization example
+- `assets/images/sample.png` (1.57 MB) — visual effects and depth estimation sample showcase
+- `assets/videos/InShot_20260902_015848586.mp4` (31.2 MB) — live demonstration video showing real-time AI depth estimation and depth-driven effects
 
 ## 47. Outputs
 
@@ -682,6 +689,7 @@ The README.md is comprehensive and well-structured:
 - Standalone depth benchmark
 - README documentation
 - Model weights loaded and working (verified by existing screenshots in outputs/)
+- **[NEW]** Demo video recording (`assets/videos/InShot_20260902_015848586.mp4`) showing live depth estimation and visual effects
 - **[NEW]** Streamlit web dashboard (`streamlit_app.py`) with full-width dark-theme UI
 - **[NEW]** Auto-starting always-on pipeline (no start button required in Streamlit mode)
 - **[NEW]** Integrated control toolbar (heatmap palette, fog/blur/bg-blur toggles, effect preset, camera index)
@@ -696,7 +704,6 @@ The README.md is comprehensive and well-structured:
 
 - Automated tests (`tests/` is empty)
 - Utility scripts (`scripts/` is empty)
-- Demo videos (`assets/videos/` is empty)
 - Lighting toggle key in OpenGL mode (always enabled)
 - Configuration file (all constants are hardcoded)
 - Cross-platform support (Windows-only)
