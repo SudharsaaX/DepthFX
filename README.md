@@ -10,6 +10,19 @@ The project offers **two complementary deployment interfaces**:
 
 **Depth Anything V2 Small** runs on **PyTorch + CUDA with FP16 autocast** to produce per-frame depth maps at $320\times 320$ resolution in ~10–15 ms on an RTX 4070.
 
+<p align="center">
+  <video src="assets/videos/InShot_20260902_015848586.mp4" width="100%" controls="controls" autoplay loop muted playsinline style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+    <source src="assets/videos/InShot_20260902_015848586.mp4" type="video/mp4">
+    <a href="assets/videos/InShot_20260902_015848586.mp4">▶ Click to Watch Project Demo Video (MP4)</a>
+  </video>
+</p>
+
+<p align="center">
+  <strong>🎥 Project Live Demo:</strong> <em>Real-Time AI Monocular Depth Estimation &amp; Depth-Aware Visual Effects in Action (30 FPS · 1440×1080)</em>
+  <br>
+  <sub>Direct file: <a href="assets/videos/InShot_20260902_015848586.mp4"><code>assets/videos/InShot_20260902_015848586.mp4</code></a></sub>
+</p>
+
 ---
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
@@ -21,20 +34,10 @@ The project offers **two complementary deployment interfaces**:
 
 ---
 
-## Live Demo & Pipeline Preview
+## Live Dashboard & Pipeline Preview
 
 <p align="center">
-  <video src="assets/videos/InShot_20260902_015848586.mp4" width="100%" controls autoplay loop muted playsinline>
-    <a href="assets/videos/InShot_20260902_015848586.mp4">Watch DepthFX Demo Video</a>
-  </video>
-</p>
-
-<p align="center">
-  <em>DepthFX Live Demonstration — Real-Time Monocular Depth Estimation &amp; Depth-Aware Visual Effects.</em>
-</p>
-
-<p align="center">
-  <img src="assets/images/depth_test.jpg" alt="DepthFX Real-Time Pipeline — Camera Effects, Depth Map, and Thermal Heatmap" width="100%">
+  <img src="assets/images/depth_test.jpg" alt="DepthFX Real-Time Pipeline — Camera Effects, Depth Map, and Thermal Heatmap" width="100%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
 </p>
 
 <p align="center">
