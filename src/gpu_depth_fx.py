@@ -12,6 +12,7 @@ import torch
 
 from OpenGL import GL
 from OpenGL.GL import shaders
+from PIL import Image, ImageDraw, ImageFont
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 if SRC_DIR not in sys.path:
@@ -20,12 +21,17 @@ if SRC_DIR not in sys.path:
 from depth_estimator import DepthEstimator
 
 CAMERA_INDEX = 0
+
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
+
 AI_SIZE = 320
+
 DEPTH_UPDATE_INTERVAL = 2
+
 DEPTH_SMOOTHING = 0.65
 
 DISPLAY_MODES = {
@@ -297,6 +303,584 @@ void main()
 """
 
 
+# ─── HUD Shader Programs ──────────────────────────────────────────────────────
+
+HUD_VERT = """
+#version 330 core
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec2 a_texcoord;
+out vec2 v_texcoord;
+void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_texcoord = a_texcoord;
+}
+"""
+
+HUD_FRAG = """
+#version 330 core
+in vec2 v_texcoord;
+out vec4 FragColor;
+uniform sampler2D u_tex;
+void main() {
+    FragColor = texture(u_tex, v_texcoord);
+}
+"""
+
+
+# ─── HUD Renderer ─────────────────────────────────────────────────────────────
+
+class HUDRenderer:
+    """
+    Renders a professional dark-theme overlay HUD on top of the GL scene.
+
+    Architecture
+    ------------
+    - PIL/Pillow draws text and shapes into RGBA images (off-screen, CPU).
+    - Each panel image is uploaded to a dedicated RGBA8 OpenGL texture.
+    - A minimal HUD shader blits each texture quad with alpha blending.
+    - PIL generation is throttled: stats at ~4 Hz, controls on state change.
+    """
+
+    # ── Colour palette ────────────────────────────────────────────
+    C_BG          = ( 10,  12,  18, 195)
+    C_BORDER      = (  0, 170, 140, 130)
+    C_ACCENT      = (  0, 210, 170, 255)
+    C_DIM         = (100, 110, 128, 215)
+    C_TEXT        = (215, 220, 232, 255)
+    C_VALUE       = (  0, 210, 170, 255)
+    C_BTN_ON      = (  0,  48,  40, 218)
+    C_BTN_OFF     = ( 20,  23,  34, 215)
+    C_BTN_BDR_ON  = (  0, 200, 160, 200)
+    C_BTN_BDR_OFF = ( 46,  50,  64, 170)
+    C_LED_ON      = (  0, 210, 170, 255)
+    C_LED_OFF     = ( 60,  65,  82, 200)
+    C_SEP         = ( 36,  40,  53, 180)
+
+    PANEL_W = 242
+    STATS_W = 207
+    STATS_H = 168
+
+    def __init__(self, window_w: int, window_h: int,
+                 device_name: str = "", cuda_version: str = ""):
+        self.win_w        = window_w
+        self.win_h        = window_h
+        self.device_name  = device_name
+        self.cuda_version = cuda_version
+
+        self._load_fonts()
+        self._compile_shader()
+        self._init_panels()
+
+        self._last_key         = None
+        self._last_legend_mode = -1
+        self._last_stats_t     = 0.0
+
+    # ── Font loading ───────────────────────────────────────────────
+
+    def _load_fonts(self):
+        candidates = [
+            "C:/Windows/Fonts/consola.ttf",
+            "C:/Windows/Fonts/cour.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/calibri.ttf",
+        ]
+        base = None
+        for p in candidates:
+            if Path(p).exists():
+                base = p
+                break
+
+        def _ttf(path, size):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                try:
+                    return ImageFont.load_default(size=size)
+                except Exception:
+                    return ImageFont.load_default()
+
+        def _def(size):
+            try:
+                return ImageFont.load_default(size=size)
+            except Exception:
+                return ImageFont.load_default()
+
+        if base:
+            self.f_title = _ttf(base, 15)
+            self.f_label = _ttf(base, 11)
+            self.f_val   = _ttf(base, 13)
+            self.f_small = _ttf(base, 10)
+        else:
+            self.f_title = _def(15)
+            self.f_label = _def(11)
+            self.f_val   = _def(13)
+            self.f_small = _def(10)
+
+    # ── Shader compilation ─────────────────────────────────────────
+
+    def _compile_shader(self):
+        v = shaders.compileShader(HUD_VERT, GL.GL_VERTEX_SHADER)
+        f = shaders.compileShader(HUD_FRAG, GL.GL_FRAGMENT_SHADER)
+        self.prog = shaders.compileProgram(v, f)
+        GL.glDeleteShader(v)
+        GL.glDeleteShader(f)
+        GL.glUseProgram(self.prog)
+        loc = GL.glGetUniformLocation(self.prog, "u_tex")
+        if loc >= 0:
+            GL.glUniform1i(loc, 0)
+        GL.glUseProgram(0)
+
+    # ── OpenGL helpers ─────────────────────────────────────────────
+
+    def _make_quad(self, x: int, y: int, w: int, h: int):
+        """Build a VAO/VBO for a pixel-space rect; UV (0,0)=GL bottom-left."""
+        x0 =  (x       / self.win_w) * 2.0 - 1.0
+        x1 =  ((x + w) / self.win_w) * 2.0 - 1.0
+        y0 =  1.0 - ((y + h) / self.win_h) * 2.0  # NDC bottom of panel
+        y1 =  1.0 - ( y      / self.win_h) * 2.0  # NDC top of panel
+        # UV rows: (0,0) = GL bottom = PIL row after flipud row-0 = PIL bottom
+        # UV (1,1) = GL top = PIL top after flipud
+        verts = np.array([
+            x0, y0,  0.0, 0.0,
+            x1, y0,  1.0, 0.0,
+            x1, y1,  1.0, 1.0,
+            x0, y0,  0.0, 0.0,
+            x1, y1,  1.0, 1.0,
+            x0, y1,  0.0, 1.0,
+        ], dtype=np.float32)
+        vao = GL.glGenVertexArrays(1)
+        vbo = GL.glGenBuffers(1)
+        GL.glBindVertexArray(vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, verts.nbytes, verts, GL.GL_STATIC_DRAW)
+        stride = 4 * verts.itemsize
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, stride, ctypes.c_void_p(0))
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, GL.GL_FALSE, stride, ctypes.c_void_p(8))
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
+        GL.glBindVertexArray(0)
+        return vao, vbo
+
+    def _make_tex(self, w: int, h: int) -> int:
+        tex = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexImage2D(
+            GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0,
+            GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, None,
+        )
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        return tex
+
+    def _upload(self, tex: int, img):
+        """Upload a PIL RGBA image to an OpenGL texture (flip for GL origin)."""
+        arr = np.flipud(np.array(img, dtype=np.uint8))
+        arr = np.ascontiguousarray(arr)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+        GL.glTexSubImage2D(
+            GL.GL_TEXTURE_2D, 0, 0, 0,
+            img.width, img.height,
+            GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, arr,
+        )
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+
+    # ── Panel setup ────────────────────────────────────────────────
+
+    def _init_panels(self):
+        lw, lh = 390, 38
+        self.panels = {
+            "left":   {"x": 0,                          "y": 0,
+                       "w": self.PANEL_W,                "h": self.win_h},
+            "stats":  {"x": self.win_w - self.STATS_W,  "y": 0,
+                       "w": self.STATS_W,                "h": self.STATS_H},
+            "legend": {"x": (self.win_w - lw) // 2,
+                       "y": self.win_h - lh - 8,        "w": lw, "h": lh},
+        }
+        for p in self.panels.values():
+            p["vao"], p["vbo"] = self._make_quad(p["x"], p["y"], p["w"], p["h"])
+            p["tex"]           = self._make_tex(p["w"], p["h"])
+
+    # ── PIL drawing helpers ────────────────────────────────────────
+
+    def _tw(self, text: str, font) -> int:
+        """Text width in pixels (robust across Pillow versions)."""
+        try:
+            bb = font.getbbox(text)
+            return bb[2] - bb[0]
+        except AttributeError:
+            try:
+                return font.getsize(text)[0]
+            except Exception:
+                return len(text) * 7
+        except Exception:
+            return len(text) * 7
+
+    def _sep(self, d, y: int, W: int, pad: int = 14):
+        d.line([(pad, y), (W - pad, y)], fill=self.C_SEP, width=1)
+
+    def _btn(self, d, x: int, y: int, label: str, active: bool, font,
+             btn_h: int = 22) -> int:
+        """Draw a state button; returns its pixel width."""
+        bw  = self._tw(label, font) + 18
+        bg  = self.C_BTN_ON      if active else self.C_BTN_OFF
+        bdr = self.C_BTN_BDR_ON  if active else self.C_BTN_BDR_OFF
+        tc  = self.C_ACCENT      if active else (145, 150, 168, 220)
+        d.rectangle([x, y, x + bw - 1, y + btn_h - 1], fill=bg, outline=bdr)
+        d.text((x + 9, y + (btn_h - 12) // 2), label, font=font, fill=tc)
+        return bw
+
+    # ── Panel: left sidebar ────────────────────────────────────────
+
+    def _draw_left(self, state: dict):
+        p = self.panels["left"]
+        W, H = p["w"], p["h"]
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d   = ImageDraw.Draw(img)
+
+        d.rectangle([0, 0, W - 1, H - 1], fill=self.C_BG)
+        d.line([(W - 1, 0), (W - 1, H - 1)], fill=self.C_BORDER, width=1)
+
+        PAD = 14
+        y   = 14
+
+        # ── Title ────────────────────────────────────────────────
+        tw_depth = self._tw("DEPTH", self.f_title)
+        d.text((PAD, y),               "DEPTH", font=self.f_title, fill=self.C_ACCENT)
+        d.text((PAD + tw_depth + 5, y), "FX",   font=self.f_title,
+               fill=(255, 255, 255, 255))
+        ul_end = PAD + tw_depth + 5 + self._tw("FX", self.f_title)
+        d.line([(PAD, y + 18), (ul_end, y + 18)], fill=(0, 165, 135, 140), width=1)
+        y += 27
+
+        # ── AI MODEL ─────────────────────────────────────────────
+        d.text((PAD, y), "AI  MODEL", font=self.f_small, fill=self.C_DIM)
+        y += 15
+        d.text((PAD, y), "Depth Anything V2  \u00b7  ViT-S",
+               font=self.f_label, fill=self.C_TEXT)
+        y += 15
+        d.text((PAD, y), f"CUDA {self.cuda_version}  \u00b7  FP16 Autocast",
+               font=self.f_small, fill=(0, 198, 160, 210))
+        y += 14
+        d.text((PAD, y),
+               f"\u0394/{DEPTH_UPDATE_INTERVAL}  \u00b7  \u03b1={DEPTH_SMOOTHING}"
+               f"  \u00b7  {AI_SIZE}px input",
+               font=self.f_small, fill=(98, 108, 126, 200))
+        y += 20
+
+        self._sep(d, y, W)
+        y += 10
+
+        # ── DISPLAY MODE ─────────────────────────────────────────
+        d.text((PAD, y), "DISPLAY  MODE", font=self.f_small, fill=self.C_DIM)
+        y += 15
+        cur_mode = DISPLAY_MODES[state["display_mode"]]
+        bx = PAD
+        for m in ["NORMAL", "DEPTH", "HEATMAP"]:
+            bx += self._btn(d, bx, y, m, m == cur_mode, self.f_small) + 5
+        y += 32
+
+        self._sep(d, y, W)
+        y += 10
+
+        # ── EFFECT PRESET ─────────────────────────────────────────
+        d.text((PAD, y), "EFFECT  PRESET", font=self.f_small, fill=self.C_DIM)
+        y += 15
+        cur_level = state["effect_level"]
+        bx = PAD
+        for lbl, lvl in [("LIGHT", 1), ("MEDIUM", 2), ("STRONG", 3)]:
+            bx += self._btn(d, bx, y, lbl, lvl == cur_level, self.f_small) + 5
+        y += 32
+
+        self._sep(d, y, W)
+        y += 10
+
+        # ── EFFECTS TOGGLES ───────────────────────────────────────
+        d.text((PAD, y), "EFFECTS", font=self.f_small, fill=self.C_DIM)
+        y += 15
+        for lbl, en, key in [
+            ("FOG",     state["fog_enabled"],     "F"),
+            ("BLUR",    state["blur_enabled"],    "B"),
+            ("BG BLUR", state["bg_blur_enabled"], "P"),
+        ]:
+            led = self.C_LED_ON if en else self.C_LED_OFF
+            d.ellipse([PAD, y + 4, PAD + 8, y + 12], fill=led)
+            d.text((PAD + 14, y + 1), lbl, font=self.f_label, fill=self.C_TEXT)
+            st_txt = "ON" if en else "OFF"
+            st_col = self.C_ACCENT if en else (88, 92, 110, 210)
+            sw = self._tw(st_txt, self.f_small)
+            d.text((W - PAD - sw, y + 2), st_txt, font=self.f_small, fill=st_col)
+            kw = self._tw(key, self.f_small)
+            kx = W - PAD - sw - kw - 16
+            d.rectangle([kx, y + 1, kx + kw + 8, y + 14],
+                        fill=(18, 21, 32, 210), outline=(42, 46, 62, 155))
+            d.text((kx + 4, y + 2), key, font=self.f_small,
+                   fill=(0, 178, 143, 215))
+            y += 20
+
+        y += 4
+        self._sep(d, y, W)
+        y += 10
+
+        # ── ACTIONS ───────────────────────────────────────────────
+        d.text((PAD, y), "ACTIONS", font=self.f_small, fill=self.C_DIM)
+        y += 15
+        bx = PAD
+        for lbl, _ in [("SCREENSHOT", "S"), ("RESET", "R")]:
+            bw = self._tw(lbl, self.f_small) + 20
+            d.rectangle([bx, y, bx + bw - 1, y + 22],
+                        fill=self.C_BTN_OFF, outline=self.C_BTN_BDR_OFF)
+            d.text((bx + 10, y + 6), lbl, font=self.f_small,
+                   fill=(168, 174, 190, 220))
+            bx += bw + 6
+        y += 32
+
+        self._sep(d, y, W)
+        y += 10
+
+        # ── KEYBOARD ──────────────────────────────────────────────
+        d.text((PAD, y), "KEYBOARD", font=self.f_small, fill=self.C_DIM)
+        y += 15
+        for key, desc in [
+            ("D",     "Cycle display mode"),
+            ("F/B/P", "Toggle fog / blur / bg"),
+            ("1/2/3", "Effect preset"),
+            ("S",     "Screenshot"),
+            ("R",     "Reset"),
+            ("Q",     "Quit"),
+            ("Mouse", "Virtual light"),
+        ]:
+            kw = self._tw(key, self.f_small)
+            d.rectangle([PAD, y, PAD + kw + 8, y + 13],
+                        fill=(16, 19, 30, 210), outline=(42, 46, 62, 155))
+            d.text((PAD + 4, y + 1), key, font=self.f_small,
+                   fill=(0, 185, 150, 218))
+            d.text((PAD + kw + 14, y + 1), desc, font=self.f_small,
+                   fill=(108, 116, 134, 200))
+            y += 16
+
+        self._upload(p["tex"], img)
+
+    # ── Panel: top-right stats ─────────────────────────────────────
+
+    def _draw_stats(self, state: dict):
+        p = self.panels["stats"]
+        W, H = p["w"], p["h"]
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d   = ImageDraw.Draw(img)
+
+        d.rectangle([0, 0, W - 1, H - 1], fill=self.C_BG)
+        d.line([(0, 0), (0, H - 1)],         fill=self.C_BORDER, width=1)
+        d.line([(0, H - 1), (W - 1, H - 1)], fill=(0, 165, 130, 75), width=1)
+
+        PAD = 10
+        y   = 10
+
+        d.text((PAD, y), "PERFORMANCE", font=self.f_small, fill=self.C_DIM)
+        y += 17
+
+        def _metric(label: str, value: str, val_col=None):
+            nonlocal y
+            col = val_col if val_col else self.C_VALUE
+            d.text((PAD, y), label, font=self.f_small, fill=(132, 138, 156, 210))
+            vw = self._tw(value, self.f_val)
+            d.text((W - PAD - vw, y), value, font=self.f_val, fill=col)
+            y += 18
+
+        fps = state.get("fps", 0.0)
+        _metric("FPS",
+                f"{fps:.1f}",
+                self.C_ACCENT if fps >= 25 else (210, 150, 55, 255))
+        _metric("AI INFERENCE", f"{state.get('ai_ms', 0.0):.1f} ms")
+        _metric("GPU SHADER",   f"{state.get('gpu_ms', 0.0):.3f} ms")
+
+        self._sep(d, y + 2, W, pad=PAD)
+        y += 12
+
+        dev = self.device_name
+        for prefix in ("NVIDIA GeForce ", "NVIDIA "):
+            if dev.startswith(prefix):
+                dev = dev[len(prefix):]
+                break
+        if len(dev) > 22:
+            dev = dev[:22]
+
+        d.text((PAD, y), dev, font=self.f_small, fill=(0, 198, 160, 190))
+        y += 14
+        d.text((PAD, y),
+               f"CUDA {self.cuda_version}  \u00b7  OpenGL 3.3",
+               font=self.f_small, fill=(88, 98, 116, 190))
+        y += 14
+        d.text((PAD, y), "FP16 Autocast  \u00b7  EWMA 0.65",
+               font=self.f_small, fill=(72, 80, 98, 175))
+
+        self._upload(p["tex"], img)
+
+    # ── Panel: heatmap legend ──────────────────────────────────────
+
+    def _draw_legend(self):
+        p = self.panels["legend"]
+        W, H = p["w"], p["h"]
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d   = ImageDraw.Draw(img)
+
+        d.rectangle([0, 0, W - 1, H - 1], fill=(10, 12, 18, 200))
+        d.rectangle([0, 0, W - 1, H - 1], outline=(0, 165, 130, 78), width=1)
+
+        PAD    = 8
+        far_w  = self._tw("FAR",  self.f_small)
+        near_w = self._tw("NEAR", self.f_small)
+        bar_x  = PAD + far_w + 6
+        bar_y  = 7
+        bar_w  = W - bar_x - PAD - near_w - 6
+        bar_h  = 12
+
+        for i in range(bar_w):
+            t = i / max(bar_w - 1, 1)
+            if t < 0.5:
+                r, g, b = 0, int(t * 2 * 255), int(255 - t * 2 * 255)
+            else:
+                r = int((t - 0.5) * 2 * 255)
+                g = int(255 - (t - 0.5) * 2 * 255)
+                b = 0
+            d.line([(bar_x + i, bar_y), (bar_x + i, bar_y + bar_h)],
+                   fill=(r, g, b, 220))
+
+        d.rectangle([bar_x - 1, bar_y - 1, bar_x + bar_w, bar_y + bar_h + 1],
+                    outline=(52, 58, 76, 175))
+        d.text((PAD, bar_y + 2),                "FAR",
+               font=self.f_small, fill=( 75, 105, 215, 220))
+        d.text((bar_x + bar_w + 5, bar_y + 2), "NEAR",
+               font=self.f_small, fill=(210,  65,  50, 220))
+
+        bl_y = bar_y + bar_h + 3
+        d.text((bar_x + 2, bl_y), "BLUE",
+               font=self.f_small, fill=( 65,  85, 195, 175))
+        gw = self._tw("GREEN", self.f_small)
+        d.text((bar_x + bar_w // 2 - gw // 2, bl_y), "GREEN",
+               font=self.f_small, fill=( 65, 170,  65, 175))
+        rw = self._tw("RED", self.f_small)
+        d.text((bar_x + bar_w - rw - 2, bl_y), "RED",
+               font=self.f_small, fill=(195,  60,  50, 175))
+
+        self._upload(p["tex"], img)
+
+    # ── Public API ─────────────────────────────────────────────────
+
+    def update(self, state: dict):
+        """Regenerate panel textures as needed (throttled / on state change)."""
+        now = time.perf_counter()
+
+        # Stats panel: throttled to ~4 Hz
+        if now - self._last_stats_t >= 0.25:
+            self._draw_stats(state)
+            self._last_stats_t = now
+
+        # Controls panel: only on state change
+        key = (
+            state["display_mode"], state["effect_level"],
+            state["fog_enabled"],  state["blur_enabled"],
+            state["bg_blur_enabled"],
+        )
+        if key != self._last_key:
+            self._draw_left(state)
+            self._last_key = key
+
+        # Legend: only when entering HEATMAP mode
+        if state["display_mode"] == 2 and self._last_legend_mode != 2:
+            self._draw_legend()
+        self._last_legend_mode = state["display_mode"]
+
+    def render(self, state: dict):
+        """Blit active panels with GL_BLEND alpha compositing."""
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glUseProgram(self.prog)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+
+        names = ["left", "stats"]
+        if state["display_mode"] == 2:
+            names.append("legend")
+
+        for name in names:
+            p = self.panels[name]
+            GL.glBindTexture(GL.GL_TEXTURE_2D, p["tex"])
+            GL.glBindVertexArray(p["vao"])
+            GL.glDrawArrays(GL.GL_TRIANGLES, 0, 6)
+            GL.glBindVertexArray(0)
+
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        GL.glUseProgram(0)
+        GL.glDisable(GL.GL_BLEND)
+
+    def resize(self, w: int, h: int):
+        """
+        Reposition HUD panels for a new framebuffer size.
+
+        Only the quad geometry (VAO/VBO) is rebuilt -- fonts are NEVER reloaded
+        so this is fast enough to call from the GLFW callback without impacting FPS.
+        The left panel's texture is recreated because its height equals win_h.
+        Stats and legend panels keep their existing textures (fixed pixel size).
+        """
+        if w <= 0 or h <= 0:
+            return
+        if w == self.win_w and h == self.win_h:
+            return  # Nothing to do
+
+        # ─ Delete old quad geometry for all panels ──────────────────────
+        for p in self.panels.values():
+            try:
+                GL.glDeleteBuffers(1, [p["vbo"]])
+                GL.glDeleteVertexArrays(1, [p["vao"]])
+            except Exception:
+                pass
+
+        # Left panel height == win_h; its texture must be recreated.
+        try:
+            GL.glDeleteTextures([self.panels["left"]["tex"]])
+        except Exception:
+            pass
+
+        self.win_w = w
+        self.win_h = h
+
+        # ─ Recompute pixel positions (panel widths/heights stay FIXED) ─────
+        lw, lh = 390, 38
+        self.panels["left" ]["h"]  = h
+        self.panels["stats" ]["x"]  = w - self.STATS_W
+        self.panels["legend"]["x"]  = (w - lw) // 2
+        self.panels["legend"]["y"]  = h - lh - 8
+
+        # ─ Rebuild all quad geometry ──────────────────────────────────
+        for p in self.panels.values():
+            p["vao"], p["vbo"] = self._make_quad(p["x"], p["y"], p["w"], p["h"])
+
+        # ─ Recreate left panel texture (new height) ─────────────────────
+        lp = self.panels["left"]
+        lp["tex"] = self._make_tex(lp["w"], lp["h"])
+
+        # Force left panel PIL redraw on next update(); stats/legend reuse existing textures.
+        self._last_key = None
+
+    def cleanup(self):
+        """Delete all OpenGL resources owned by the HUD."""
+        for p in self.panels.values():
+            try:
+                GL.glDeleteTextures([p["tex"]])
+                GL.glDeleteBuffers(1, [p["vbo"]])
+                GL.glDeleteVertexArrays(1, [p["vao"]])
+            except Exception:
+                pass
+        try:
+            GL.glDeleteProgram(self.prog)
+        except Exception:
+            pass
+
+
 class GPUTimer:
     def __init__(self):
         self.enabled = False
@@ -531,6 +1115,8 @@ def create_depth_texture():
 
 
 def main():
+    global CAMERA_WIDTH, CAMERA_HEIGHT
+
     print("=" * 60)
     print("DepthFX - GPU Depth Effects + Optimized AI + Mouse Lighting + Performance Profiler")
     print("=" * 60)
@@ -573,17 +1159,56 @@ def main():
 
     print()
     print("Opening webcam...")
-    camera = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-    if not camera.isOpened():
-        camera.release()
-        camera = cv2.VideoCapture(CAMERA_INDEX)
 
-    if not camera.isOpened():
-        raise RuntimeError("Could not open webcam.")
+    # Try the configured camera index first, then auto-detect.
+    def _open_camera(index):
+        cam = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not cam.isOpened():
+            cam.release()
+            cam = cv2.VideoCapture(index)
+        if not cam.isOpened():
+            cam.release()
+            return None
+        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # Discard stale buffered frames before reading the test frame
+        for _ in range(5):
+            cam.grab()
+        ret, frame = cam.read()
+        if not ret or frame is None or frame.size == 0:
+            cam.release()
+            return None
+        # Frame dimensions must be sane (at least 160x120)
+        if frame.shape[0] < 120 or frame.shape[1] < 160:
+            cam.release()
+            return None
+        # Verify frame contains actual image content (not dummy/black/noise stream)
+        if float(frame.std()) < 5.0 or int(frame.max()) < 10:
+            cam.release()
+            return None
+        return cam
 
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    camera = _open_camera(CAMERA_INDEX)
+    if camera is None:
+        print(f"Camera index {CAMERA_INDEX} failed, auto-detecting...")
+        for _try_idx in range(6):
+            if _try_idx == CAMERA_INDEX:
+                continue
+            camera = _open_camera(_try_idx)
+            if camera is not None:
+                print(f"Using camera index {_try_idx}")
+                break
+
+    if camera is None:
+        raise RuntimeError("Could not open any webcam. Please check camera connections.")
+
+    # Read actual resolution reported by the camera driver
+    _cam_w = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+    _cam_h = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if _cam_w > 0 and _cam_h > 0:
+        CAMERA_WIDTH  = _cam_w
+        CAMERA_HEIGHT = _cam_h
 
     print(f"Camera resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
 
@@ -594,6 +1219,23 @@ def main():
     print("R32F depth texture created.")
 
     gpu_timer = GPUTimer()
+
+    # ── HUD initialisation ─────────────────────────────────────────
+    _device_name  = ""
+    _cuda_version = ""
+    try:
+        if torch.cuda.is_available():
+            _device_name  = torch.cuda.get_device_name(0)
+            _cuda_version = str(torch.version.cuda) if torch.version.cuda else "N/A"
+    except Exception:
+        pass
+
+    hud = HUDRenderer(
+        WINDOW_WIDTH, WINDOW_HEIGHT,
+        device_name=_device_name,
+        cuda_version=_cuda_version,
+    )
+    print("HUD renderer initialised.")
 
     GL.glUseProgram(program)
     u_color = GL.glGetUniformLocation(program, "u_color")
@@ -688,6 +1330,32 @@ def main():
     glfw.set_key_callback(window, key_callback)
     glfw.set_cursor_pos_callback(window, cursor_callback)
 
+    # ── Framebuffer-size tracking (resize / maximise support) ──────
+    _fb = list(glfw.get_framebuffer_size(window))
+    if _fb[0] <= 0 or _fb[1] <= 0:
+        _fb = [WINDOW_WIDTH, WINDOW_HEIGHT]
+    fb_w, fb_h = _fb
+
+    # If the initial framebuffer already differs (HiDPI) resize HUD now
+    if fb_w != WINDOW_WIDTH or fb_h != WINDOW_HEIGHT:
+        try:
+            hud.resize(fb_w, fb_h)
+        except Exception:
+            pass
+
+    def framebuffer_size_callback(win, w, h):
+        nonlocal fb_w, fb_h
+        # Guard: only act if the size actually changed
+        if w <= 0 or h <= 0 or (w == fb_w and h == fb_h):
+            return
+        fb_w, fb_h = w, h
+        try:
+            hud.resize(w, h)
+        except Exception as _e:
+            print(f"HUD resize: {_e}")
+
+    glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
+
     current_depth = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH), dtype=np.float32)
     previous_depth = None
 
@@ -721,7 +1389,7 @@ def main():
     print("AI inference size:", AI_SIZE)
     print("Depth update interval:", DEPTH_UPDATE_INTERVAL, "frames")
     print("Depth smoothing:", DEPTH_SMOOTHING)
-    print("RGB + AI Depth → Temporal Depth → GLSL Fog + Blur + Lighting → RTX 4070")
+    print("RGB + AI Depth -> Temporal Depth -> GLSL Fog + Blur + Lighting -> RTX 4070")
     print()
 
     try:
@@ -795,6 +1463,7 @@ def main():
             depth_upload = np.flipud(current_depth).copy()
             depth_upload = np.ascontiguousarray(depth_upload, dtype=np.float32)
 
+            GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
             GL.glActiveTexture(GL.GL_TEXTURE0)
             GL.glBindTexture(GL.GL_TEXTURE_2D, rgb_texture)
             GL.glTexSubImage2D(
@@ -809,6 +1478,7 @@ def main():
                 rgb,
             )
 
+            GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 4)
             GL.glActiveTexture(GL.GL_TEXTURE1)
             GL.glBindTexture(GL.GL_TEXTURE_2D, depth_texture)
             GL.glTexSubImage2D(
@@ -823,7 +1493,7 @@ def main():
                 depth_upload,
             )
 
-            GL.glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
+            GL.glViewport(0, 0, fb_w, fb_h)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             GL.glUseProgram(program)
 
@@ -860,6 +1530,13 @@ def main():
             if u_bg_blur_enabled >= 0:
                 GL.glUniform1i(u_bg_blur_enabled, int(bg_blur_enabled))
 
+            if u_color >= 0:
+                GL.glUniform1i(u_color, 0)
+            if u_depth >= 0:
+                GL.glUniform1i(u_depth, 1)
+            if u_texel_size >= 0:
+                GL.glUniform2f(u_texel_size, 1.0 / CAMERA_WIDTH, 1.0 / CAMERA_HEIGHT)
+
             if u_time >= 0:
                 GL.glUniform1f(u_time, float(time.perf_counter()))
 
@@ -873,6 +1550,20 @@ def main():
                 gpu_timer.end()
 
             GL.glUseProgram(0)
+
+            # ── HUD overlay ──────────────────────────────────────────
+            _hud_state = {
+                "display_mode":    display_mode,
+                "effect_level":    effect_level,
+                "fog_enabled":     fog_enabled,
+                "blur_enabled":    blur_enabled,
+                "bg_blur_enabled": bg_blur_enabled,
+                "fps":             fps,
+                "ai_ms":           displayed_ai_ms,
+                "gpu_ms":          gpu_timer.last_ms,
+            }
+            hud.update(_hud_state)
+            hud.render(_hud_state)
 
             if take_screenshot:
                 save_screenshot(window)
@@ -911,6 +1602,11 @@ def main():
 
         try:
             camera.release()
+        except Exception:
+            pass
+
+        try:
+            hud.cleanup()
         except Exception:
             pass
 

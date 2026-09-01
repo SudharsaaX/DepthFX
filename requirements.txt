@@ -30,4 +30,5 @@ timm==1.0.28
 torch==2.13.0+cu130
 torchvision==0.28.0+cu130
 tqdm==4.70.0
+streamlit
 typing_extensions==4.16.0
