@@ -1,21 +1,27 @@
 # DepthFX
 
-### Real-Time AI Depth Estimation → GPU-Accelerated Visual Effects
+### Real-Time AI Depth Estimation → GPU-Accelerated Visual Effects & Web Dashboard
 
-**DepthFX** is a real-time computer vision and GPU rendering pipeline that estimates monocular depth from a live webcam feed and uses that depth map to drive GPU-accelerated visual effects — all running concurrently at interactive frame rates.
+**DepthFX** is a real-time computer vision and GPU rendering application that estimates monocular depth from a live webcam feed and uses that depth map to drive depth-aware visual effects — running concurrently at interactive frame rates.
 
-**Depth Anything V2 Small** runs on **PyTorch + CUDA with FP16 autocast** to produce per-frame depth maps. Those maps are uploaded as an **OpenGL R32F texture** and consumed by a **GLSL fragment shader** that applies depth-aware fog, blur, lighting, and background blur entirely on the GPU.
+The project offers **two complementary deployment interfaces**:
+1. **Web Dashboard (`streamlit_app.py` / `run_app.bat`):** A modern, full-width dark-theme browser dashboard featuring synchronized triple-view feeds (Normal + Effects, Depth Map, Depth Heatmap), an integrated control toolbar, live 4-card hardware/AI telemetry, and panoramic snapshot capture.
+2. **Desktop Graphics Engine (`src/gpu_depth_fx.py`):** A native OpenGL 3.3 Core Profile desktop application with custom GLSL fragment shaders executing depth-aware fog, blur, edge enhancement, and interactive mouse-controlled virtual point lighting.
+
+**Depth Anything V2 Small** runs on **PyTorch + CUDA with FP16 autocast** to produce per-frame depth maps at $320\times 320$ resolution in ~10–15 ms on an RTX 4070.
 
 ![DepthFX — depth heatmap visualization](assets/images/depth_test.png)
 
-*Heatmap display mode — false-colour depth rendered by GLSL (`D` key cycles modes).*
+*Heatmap display mode — false-colour depth visualization.*
 
 ---
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.13-EE4C2C?style=flat&logo=pytorch&logoColor=white)
 ![CUDA](https://img.shields.io/badge/CUDA-13.0-76B900?style=flat&logo=nvidia&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.42-FF4B4B?style=flat&logo=streamlit&logoColor=white)
 ![OpenGL](https://img.shields.io/badge/OpenGL-3.3_core-5586A4?style=flat&logo=opengl)
+![OpenCV](https://img.shields.io/badge/OpenCV-5.0-5C3EE8?style=flat&logo=opencv&logoColor=white)
 
 ---
 
@@ -25,121 +31,83 @@
 flowchart TD
     A["Webcam (640x480)"] --> B["BGR Frame — OpenCV"]
     B --> C["Depth Anything V2 Small\nPyTorch · CUDA · FP16 autocast\ninference at 320px"]
-    C --> D["Raw Depth Map\nnormalized to 0–1"]
-    D --> E["Temporal Processing\nupdate every 2 frames\nEWMA smoothing factor 0.65"]
-    E --> F["R32F Depth Texture\nOpenGL"]
-    B --> G["RGB8 Colour Texture\nOpenGL"]
-    F --> H["GLSL Fragment Shader\nOpenGL 3.3 core"]
-    G --> H
-    H --> I["Depth-Aware Effects\nfog · blur · lighting · background blur · edge"]
-    I --> J["Final Framebuffer\nGLFW window — 1280x720"]
+    C --> D["Normalized Depth Map\nfloat32 (0.0 to 1.0)"]
+    
+    subgraph "Interface 1: Streamlit Web Dashboard (streamlit_app.py)"
+        D --> S1["Vectorized CPU Effects\nNumPy · OpenCV GaussianBlur"]
+        B --> S1
+        D --> S2["Heatmap Lookup Table\nInferno / Turbo / Jet / Magma / Plasma"]
+        D --> S3["Grayscale Normalization\n3-channel RGB broadcast"]
+        S1 --> S4["Triple-View Responsive Grid\nAspect Ratio 4:3 locked · JPEG compressed"]
+        S2 --> S4
+        S3 --> S4
+        S4 --> S5["Browser Dashboard UI\nLive Telemetry · Toolbar · Snapshots"]
+    end
+
+    subgraph "Interface 2: Desktop OpenGL Engine (src/gpu_depth_fx.py)"
+        D --> O1["Temporal EWMA Smoothing\nalpha = 0.65 · 2-frame interval"]
+        O1 --> O2["R32F Depth Texture\nOpenGL Texture Unit 1"]
+        B --> O3["RGB8 Colour Texture\nOpenGL Texture Unit 0"]
+        O2 --> O4["GLSL Fragment Shader\nOpenGL 3.3 core fullscreen quad"]
+        O3 --> O4
+        O4 --> O5["Native GLFW Window\nMouse-controlled lighting · HUD"]
+    end
 ```
 
-> **Key distinction:** PyTorch/CUDA performs the AI depth inference. OpenGL/GLSL handles all real-time rendering and visual effects. The depth model does not execute inside GLSL.
+> **Key distinction:** PyTorch/CUDA handles the AI depth estimation across both interfaces. In the desktop application, visual effects are computed via GLSL fragment shaders on the GPU. In the web dashboard, visual effects are processed via optimized vectorized OpenCV/NumPy routines with JPEG WebSocket streaming.
 
 ---
 
 ## Features
 
-- **Monocular depth estimation** — Depth Anything V2 Small (ViT-S encoder), CUDA-accelerated
-- **FP16 autocast inference** — `torch.autocast` on CUDA; input stays FP32, compute runs FP16
-- **Temporal depth processing** — depth runs every 2 frames; EWMA blend (`0.65 × prev + 0.35 × new`) keeps the map stable between updates
-- **OpenGL R32F depth texture** — single-channel 32-bit float GPU texture; no precision loss from quantization
-- **GLSL depth-aware fog** — smoothstep fog ramp applied per fragment based on scene distance
-- **GLSL depth-aware blur** — multi-tap weighted blur, radius driven by per-pixel depth
-- **GLSL depth-based background blur** — independent blur pass using a wider depth band for background separation
-- **GLSL depth-edge enhancement** — depth-discontinuity highlights computed per fragment from neighbour samples
-- **Mouse-controlled virtual light** — cursor position sets a screen-space point light; intensity is modulated by depth
-- **Three effect intensity presets** — light / medium / strong; each preset configures six shader uniforms independently
-- **Three display modes** — Normal (full effects), grayscale Depth, false-colour Heatmap
-- **OpenGL screenshot capture** — `glReadPixels` reads the final framebuffer; saved as a timestamped PNG to `outputs/`
-- **OpenGL GPU timer query** — `GL_TIME_ELAPSED` measures shader execution time; mean/min/max reported on exit
+### AI & Core Pipeline
+- **Monocular depth estimation** — Depth Anything V2 Small (ViT-S encoder, DINOv2 backbone, DPT decoder head)
+- **CUDA FP16 autocast inference** — `torch.autocast(device_type="cuda", dtype=torch.float16)` for accelerated Tensor Core compute
+- **Zero-lag camera buffer clamping** — `cv2.CAP_PROP_BUFFERSIZE = 1` eliminates driver frame queuing
+- **Hardware-synchronized latency measurement** — `torch.cuda.synchronize()` ensures accurate millisecond telemetry
+
+### Streamlit Web Dashboard (`streamlit_app.py`)
+- **Always-on live streaming** — auto-starts stream upon page launch without manual triggers
+- **Triple-view layout** — displays **Normal + Effects**, **Depth Map**, and **Depth Heatmap** side-by-side
+- **Responsive 4:3 aspect ratio locking** — custom CSS ensures camera video fills cards edge-to-edge with zero letterboxing
+- **Integrated toolbar** — control heatmap palette (`Inferno`, `Turbo`, `Jet`, `Magma`, `Plasma`), atmospheric fog, depth blur, background blur, presets, and camera device (0–10)
+- **Real-time telemetry grid** — 4 responsive cards updating at 2 Hz:
+  - *Performance:* Live FPS, AI Latency (ms), Inference Rate (1:1), AI Resolution (320×320), Motion Delay
+  - *System Status:* Camera state, AI Model status, CUDA Engine, Pipeline status, Active Renderer
+  - *Hardware:* GPU device identifier, CUDA version, PyTorch version, Compute Capability, Host OS
+  - *AI Model:* Architecture, Backbone, Decoder Head, Precision, Model weights checkpoint
+- **Panoramic snapshot capture** — concatenates all 3 feeds horizontally (`np.hstack`) to a $1920\times 480$ PNG in `outputs/`
+- **One-click batch launcher** — Windows `run_app.bat` handles virtual environment activation and dashboard startup
+
+### Desktop OpenGL Engine (`src/gpu_depth_fx.py`)
+- **GLSL depth-aware fog** — smoothstep atmospheric fog ramp applied per-fragment based on depth
+- **GLSL depth-aware blur** — multi-tap weighted blur with depth-dependent radius
+- **GLSL background blur** — wider transition band targeting portrait-mode background separation
+- **GLSL depth-edge enhancement** — 4-neighbor depth-discontinuity detection boosting edge contrast
+- **Interactive mouse-controlled lighting** — real-time 3D-like virtual spotlight positioned by cursor and modulated by depth
+- **Temporal smoothing (EWMA)** — $0.65 \times \text{previous} + 0.35 \times \text{new}$ reduces flicker across 2-frame update intervals
+- **OpenGL R32F texture** — single-channel 32-bit floating-point GPU texture preserves continuous depth precision
+- **GPU timer query** — hardware-level `GL_TIME_ELAPSED` timer queries measure sub-millisecond shader execution
 
 ---
 
-## How It Works
+## Effect Presets
 
-1. **Capture** — OpenCV opens the webcam at 640×480 via DirectShow (`cv2.CAP_DSHOW`) and reads a BGR frame each iteration.
+Both interfaces provide three calibrated presets configuring fog density, blur radii, and transition bands:
 
-2. **Depth inference** — Every 2nd frame, the BGR image is forwarded to `DepthEstimator.estimate()`. The ViT-S model runs `infer_image()` at 320px inside `torch.inference_mode()` combined with `torch.autocast(device_type="cuda", dtype=torch.float16)`. `torch.cuda.synchronize()` is called after inference to obtain accurate wall-clock timing.
-
-3. **Temporal smoothing** — The incoming depth map is blended with the retained previous map: `current = 0.65 × previous + 0.35 × new`. On the first frame the map is used directly. This EWMA reduces per-frame flicker without perceptible lag.
-
-4. **GPU texture upload** — The RGB frame is vertically flipped (OpenGL origin is bottom-left) and uploaded to an **RGB8 texture** bound to unit 0. The smoothed float32 depth array is uploaded to an **R32F texture** bound to unit 1, both via `glTexSubImage2D`.
-
-5. **GLSL rendering** — A fullscreen triangle-pair quad covers the viewport. The fragment shader samples both textures at each fragment UV and executes the enabled effect passes.
-
-6. **Depth-aware effects** — Every effect reads the R32F depth at the current fragment. Fog blends the scene colour toward a light-grey fog colour using `smoothstep` over the configured depth range. Blur radius and background blur factor both increase with distance. The virtual light attenuates with screen-space distance to the cursor and is further modulated by depth. A depth-edge term is added to boost discontinuity contrast.
-
-7. **Display and profiling** — Buffers are swapped via GLFW. The window title updates every 250 ms with current FPS, last AI latency, and GPU shader time from the `GL_TIME_ELAPSED` query.
+| Preset | Fog Strength | Blur Strength | Fog Start (`fs`) | Fog End (`fe`) |
+|:-------|:------------:|:-------------:|:--------------:|:------------:|
+| **LIGHT (1)** | 0.30 | 0.25 | 0.55 | 0.95 |
+| **MEDIUM (2)** *(default)* | 0.55 | 0.50 | 0.35 | 0.90 |
+| **STRONG (3)** | 0.85 | 0.85 | 0.20 | 0.80 |
 
 ---
 
-## Display Modes
+## Quick Start & Running
 
-Press **D** to cycle:
+### 1. Installation
 
-| Mode | Shader Behaviour |
-|------|-----------------|
-| **NORMAL** | Full RGB render with fog, blur, lighting, and edge effects |
-| **DEPTH** | Outputs `vec3(depth)` — greyscale, closer surfaces appear brighter |
-| **HEATMAP** | False-colour: blue (far) blends to green, then red (near) |
-
----
-
-## Effect Levels
-
-Press **1**, **2**, or **3**. All six parameters are passed as GLSL uniforms each frame from the `EFFECTS` dict in `gpu_depth_fx.py`:
-
-| Uniform | Light (1) | Medium (2) | Strong (3) |
-|---------|:---------:|:----------:|:----------:|
-| `u_fog_strength` | 0.30 | 0.55 | 0.85 |
-| `u_blur_strength` | 0.25 | 0.50 | 0.85 |
-| `u_light_strength` | 0.35 | 0.65 | 0.95 |
-| `u_ambient_strength` | 0.80 | 0.65 | 0.50 |
-| `u_fog_start` | 0.55 | 0.35 | 0.20 |
-| `u_fog_end` | 0.95 | 0.90 | 0.80 |
-
----
-
-## Controls
-
-| Key | Action |
-|-----|--------|
-| **D** | Cycle display mode: NORMAL → DEPTH → HEATMAP |
-| **F** | Toggle depth-aware fog |
-| **B** | Toggle depth-aware blur |
-| **P** | Toggle depth-based background blur |
-| **1** | Light effect preset |
-| **2** | Medium effect preset *(default)* |
-| **3** | Strong effect preset |
-| **R** | Reset all settings to defaults |
-| **S** | Capture screenshot → `outputs/depthfx_YYYYMMDD_HHMMSS.png` |
-| **Q** | Quit |
-| **Mouse** | Move the virtual light position |
-
----
-
-## Performance
-
-Measured on **NVIDIA GeForce RTX 4070 Laptop GPU** — CUDA 13.0, FP16 autocast, inference size 320:
-
-| Metric | Measured |
-|--------|--------:|
-| AI inference per depth update | ~20 ms |
-| Estimated AI throughput | ~48 FPS |
-| AI update ratio (`DEPTH_UPDATE_INTERVAL = 2`) | ~50% |
-| GPU shader time (`GL_TIME_ELAPSED`) | ~0.6–0.9 ms |
-
-Setting `DEPTH_UPDATE_INTERVAL = 2` runs depth inference on every other rendered frame, halving AI compute cost. `DEPTH_SMOOTHING = 0.65` preserves visual stability across the skipped frames. GPU shader time stays well under 1 ms, so the bottleneck is always the AI inference pass.
-
-Performance varies with GPU hardware, CUDA version, and scene complexity.
-
----
-
-## Installation
-
-> Requires **Windows** with an NVIDIA GPU and CUDA 13.0 drivers.
+> Requires **Windows** with an NVIDIA GPU and CUDA drivers.
 
 ```powershell
 git clone https://github.com/SudharsaaX/DepthFX.git
@@ -151,13 +119,9 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins `torch==2.13.0+cu130`, `torchvision==0.28.0+cu130`, `PyOpenGL==3.1.10`, `glfw==2.10.2`, `opencv-python==5.0.0.93`, `numpy==2.4.6`, `timm==1.0.28`, and `einops==0.8.2`.
+### 2. Model Checkpoint Setup
 
----
-
-## Model Setup
-
-Model checkpoint files are **not included** (`.pth` is git-ignored). Download `depth_anything_v2_vits.pth` and place it at:
+Download `depth_anything_v2_vits.pth` (~94.6 MB) and place it in the `checkpoints/` directory:
 
 ```
 DepthFX/
@@ -165,39 +129,59 @@ DepthFX/
     └── depth_anything_v2_vits.pth
 ```
 
-The application raises `FileNotFoundError` at startup if the file is absent.
+### 3. Launching the Application
 
-Model configuration used by `DepthEstimator` (from `src/depth_estimator.py`):
+#### Option A: Streamlit Web Dashboard (Recommended)
 
-```python
-CHECKPOINT_PATH = BASE_DIR / "checkpoints" / "depth_anything_v2_vits.pth"
-
-MODEL_CONFIG = {
-    "encoder": "vits",
-    "features": 64,
-    "out_channels": [48, 96, 192, 384],
-}
-```
-
----
-
-## Running
-
-**Depth inference benchmark:**
-
+Single-click launcher:
 ```powershell
-python src\depth_estimator.py
+.\run_app.bat
 ```
+*Or run directly:*
+```powershell
+streamlit run streamlit_app.py
+```
+Open your browser at `http://localhost:8501`.
 
-Runs 10 GPU warm-up frames, then 100 timed inference iterations. Reports average latency, estimated throughput FPS, and VRAM usage.
-
-**Main real-time application:**
+#### Option B: Native Desktop OpenGL Engine
 
 ```powershell
 python src\gpu_depth_fx.py
 ```
 
-Loads the model, opens the GLFW window and webcam, and enters the real-time render loop.
+**Desktop Keyboard Controls:**
+| Key | Action |
+|:---:|:-------|
+| **D** | Cycle display mode: NORMAL → DEPTH → HEATMAP |
+| **F** | Toggle atmospheric fog |
+| **B** | Toggle depth-aware blur |
+| **P** | Toggle background blur |
+| **1 / 2 / 3** | Switch presets: Light / Medium / Strong |
+| **R** | Reset all settings to defaults |
+| **S** | Save framebuffer screenshot to `outputs/` |
+| **Q** | Quit application |
+| **Mouse** | Reposition virtual point light |
+
+#### Option C: Standalone Depth Benchmark
+
+```powershell
+python src\depth_estimator.py
+```
+Runs 10 warmup inferences followed by 100 timed iterations, reporting average latency, throughput FPS, and VRAM consumption.
+
+---
+
+## Performance
+
+Measured on an **NVIDIA GeForce RTX 4070 Laptop GPU** (CUDA 13.0, FP16 autocast, 320×320 inference):
+
+| Metric | Desktop OpenGL Engine | Streamlit Web Dashboard |
+|:-------|----------------------:|------------------------:|
+| **AI Inference Latency** | ~20 ms | ~10–15 ms |
+| **AI Update Interval** | Every 2 frames | Every frame (1:1) |
+| **Display Framerate** | 45–60 FPS | 28–35 FPS (browser WebSocket limited) |
+| **Shader / Effect Time** | ~0.6–0.9 ms (GLSL) | ~3–5 ms (vectorized CPU) |
+| **Output Resolution** | 1280×720 window | Responsive 640×480 per panel |
 
 ---
 
@@ -205,27 +189,34 @@ Loads the model, opens the GLFW window and webcam, and enters the real-time rend
 
 ```
 DepthFX/
+├── .streamlit/
+│   └── config.toml                 # Streamlit theme and server configuration
 ├── assets/
-│   └── images/
-│       └── depth_test.png          # Depth heatmap example
-├── checkpoints/                    # Model checkpoint — git-ignored
-│   └── depth_anything_v2_vits.pth
-├── outputs/                        # Runtime screenshots — git-ignored
+│   ├── images/
+│   │   └── depth_test.png          # Depth heatmap example
+│   └── videos/                     # Demo recordings
+├── checkpoints/
+│   └── depth_anything_v2_vits.pth  # Model weights (git-ignored)
+├── outputs/                        # Saved snapshots (git-ignored)
 ├── archive/
-│   └── old_experiments/
-├── scripts/                        # Currently empty
-├── tests/                          # Currently empty
+│   └── old_experiments/            # Prototype history (CPU effects, test scripts)
+├── scripts/                        # Utility scripts
+├── tests/                          # Test suite directory
 ├── src/
-│   ├── depth_anything_v2/          # Model implementation (DPT + DINOv2)
+│   ├── depth_anything_v2/          # Depth Anything V2 implementation (DINOv2 + DPT)
 │   │   ├── dpt.py
 │   │   ├── dinov2.py
-│   │   └── dinov2_layers/
+│   │   ├── dinov2_layers/
+│   │   └── util/
 │   ├── shaders/
-│   │   └── fullscreen.vert         # Fullscreen quad vertex shader (GLSL 3.30)
-│   ├── depth_estimator.py          # DepthEstimator class + benchmark entry point
-│   ├── depth_utils.py              # normalize_depth() utility
-│   └── gpu_depth_fx.py             # Main application: render loop, OpenGL, GLSL
-├── requirements.txt
+│   │   └── fullscreen.vert         # External vertex shader
+│   ├── depth_estimator.py          # DepthEstimator class & benchmark tool
+│   ├── depth_utils.py              # Depth normalization utilities
+│   └── gpu_depth_fx.py             # Desktop OpenGL 3.3 Core application
+├── run_app.bat                     # Single-click launcher for Streamlit dashboard
+├── streamlit_app.py                # Streamlit Web Dashboard application
+├── PROJECT_REPORT.md               # 10-part comprehensive technical analysis report
+├── requirements.txt                # Pinned dependencies
 ├── .gitignore
 └── README.md
 ```
@@ -235,41 +226,34 @@ DepthFX/
 ## Tech Stack
 
 | Technology | Role |
-|-----------|------|
-| **Python 3.10+** | Application runtime |
-| **PyTorch 2.13** | AI model inference framework |
-| **Depth Anything V2 Small** | Monocular depth estimation (ViT-S encoder) |
-| **CUDA 13.0** | GPU-accelerated AI compute |
-| **torch.autocast (FP16)** | Half-precision inference without model conversion |
-| **OpenCV 5.0** | Webcam capture and image preprocessing |
-| **OpenGL 3.3 core** | GPU rendering pipeline |
-| **GLSL** | Depth-aware fragment shader effects |
-| **GLFW** | Window, input handling, and OpenGL context |
-| **PyOpenGL 3.1** | Python bindings for OpenGL |
-| **NumPy 2.4** | Array operations and depth map processing |
-| **timm 1.0** | Vision transformer backbone support (DINOv2) |
+|:-----------|:-----|
+| **Python 3.10+** | Core runtime environment |
+| **PyTorch 2.13** | Deep learning framework & CUDA execution |
+| **Depth Anything V2 Small** | Monocular depth foundation model (ViT-S encoder) |
+| **CUDA 13.0 & FP16 Autocast** | GPU-accelerated inference with Tensor Core utilization |
+| **Streamlit 1.42** | Web application dashboard, UI layout & reactive controls |
+| **OpenGL 3.3 Core** | Desktop hardware graphics rendering pipeline |
+| **GLSL 3.30** | Fragment shader code for real-time post-processing |
+| **GLFW & PyOpenGL** | Desktop window management & OpenGL bindings |
+| **OpenCV 5.0** | Camera capture, frame processing, and colormap generation |
+| **NumPy 2.4** | High-performance array manipulation and composite stacking |
+| **Pillow 12.3** | Desktop HUD text and overlay generation |
+| **timm 1.0 & einops** | Vision Transformer backbone utilities |
 
 ---
 
-## Limitations
+## Comprehensive Project Report
 
-- Produces **relative** depth normalized per frame to [0, 1] — not metric distance
-- Targets **NVIDIA CUDA GPUs**; falls back to CPU inference but is not optimized for it
-- Background blur separates layers by depth value, not by semantic content
-- EWMA temporal smoothing can produce ghosting artefacts during fast motion
-- Model checkpoint is not distributed with the repository
-- No license is currently specified
+For a complete 10-part architectural breakdown, technical interview Q&As, mathematical formulations, and engineering design justifications, refer to:
+
+👉 **[PROJECT_REPORT.md](PROJECT_REPORT.md)**
 
 ---
 
-## Future Work
+## License & Attribution
 
-- **TensorRT export** — reduce inference latency further beyond FP16 autocast
-- **Improved temporal consistency** — optical-flow-guided depth warping between updates
-- **Additional GLSL effects** — depth-of-field, SSAO approximation, chromatic aberration
-- **Test suite** — unit tests for `depth_utils` and shader uniform handling
-- **Open-source license**
+Depth Anything V2 is authored by TikTok/ByteDance. This project pairs Depth Anything V2 with custom GPU rendering pipelines and modern web dashboard interfaces for real-time computer vision demonstration.
 
 ---
 
-*Built to demonstrate the engineering value of pairing fast AI depth inference with a GPU graphics pipeline — two distinct GPU workloads, PyTorch/CUDA and OpenGL/GLSL, running concurrently in a single real-time application.*
+*Built to demonstrate the engineering value of pairing fast AI depth inference with GPU rendering pipelines and responsive browser interfaces — running concurrently in a single real-time application.*

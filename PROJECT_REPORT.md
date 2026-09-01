@@ -1766,6 +1766,109 @@ Centered at the bottom of the dashboard are two dedicated action buttons:
 - **Snapshot (`action-col`):** Captures the current frame across all three feeds, constructs a horizontal composite (`np.hstack([output_normal, output_depth, output_heat])`), writes it to `outputs/depthfx_snapshot_YYYYMMDD_HHMMSS.png`, and displays a non-blocking toast notification.
 - **Reset (`reset-col`):** Clears session state and triggers `st.rerun()`, restoring default parameter values.
 
+### 3.10 Vectorized CPU Visual Effects & Mathematical Formulation
+Because standard web browsers cannot directly bind to local desktop OpenGL 3.3 Core contexts, `streamlit_app.py` implements CPU-side counterparts for the visual effects using vectorized NumPy and OpenCV operations:
+
+1. **Atmospheric Fog (`apply_fog`):**
+   - Inverts normalized depth to obtain optical distance:
+     $$\text{dist} = 1.0 - \text{depth}$$
+   - Evaluates a linear distance ramp between configurable `start` and `end` thresholds, clamped to $[0.0, 1.0]$ and scaled by `strength`:
+     $$t = \text{clip}\left(\frac{\text{dist} - \text{start}}{\max(\text{end} - \text{start}, 10^{-6})}, 0.0, 1.0\right) \times \text{strength}$$
+   - Blends scene color with atmospheric fog color `[184, 196, 214]` (RGB, matching GLSL $\text{vec3}(0.72, 0.77, 0.84)$):
+     $$\text{Output} = \text{frame} \times (1.0 - t) + \text{fog\_color} \times t$$
+
+2. **Depth-Aware Blur (`apply_blur`):**
+   - Applies an initial Gaussian blur across the entire frame with $\sigma_x = 10$:
+     $$\text{blurred} = \text{GaussianBlur}(\text{frame}, \sigma=10)$$
+   - Computes distance factor $\text{dist} = 1.0 - \text{depth}$ and evaluates an activation ramp starting at $\text{dist} = 0.50$:
+     $$\text{mask} = \text{clip}\left(\frac{\text{dist} - 0.50}{0.50}, 0.0, 1.0\right) \times \text{strength}$$
+   - **Feathered Mask Boundary Softening:** To prevent jagged silhouette artifacts around foreground boundaries, the mask itself is filtered with a secondary Gaussian blur ($\sigma_x = 3$):
+     $$\text{mask}_{\text{soft}} = \text{GaussianBlur}(\text{mask}, \sigma=3)$$
+   - Linearly interpolates between original and blurred pixels:
+     $$\text{Output} = \text{frame} \times (1.0 - \text{mask}_{\text{soft}}) + \text{blurred} \times \text{mask}_{\text{soft}}$$
+
+3. **Background Blur (`apply_bg_blur`):**
+   - Uses an aggressive blur kernel ($\sigma_x = 14$) with an expanded transition band covering $\text{dist} \in [0.25, 0.75]$:
+     $$\text{mask} = \text{clip}\left(\frac{\text{dist} - 0.25}{0.50}, 0.0, 1.0\right) \times \text{strength}$$
+   - Blends original frame with blurred background for portrait-mode depth isolation.
+
+4. **Preset Calibration Matrix:**
+   | Preset | Fog Strength | Blur Strength | Fog Start (`fs`) | Fog End (`fe`) |
+   |---|---|---|---|---|
+   | `LIGHT` | 0.30 | 0.25 | 0.55 | 0.95 |
+   | `MEDIUM` | 0.55 | 0.50 | 0.35 | 0.90 |
+   | `STRONG` | 0.85 | 0.85 | 0.20 | 0.80 |
+
+### 3.11 Heatmap Generation & Colormap Color Space Pipeline
+Depth estimation produces continuous normalized float32 values in $[0.0, 1.0]$. To render these across diverse thermal visualization profiles:
+- Float values are scaled and quantized to 8-bit unsigned integers:
+  $$\text{depth}_{u8} = (\text{clip}(\text{depth}, 0.0, 1.0) \times 255.0).\text{astype}(\text{uint8})$$
+- Color mapping is applied via OpenCV lookup tables: `cv2.applyColorMap(depth_u8, colormap_id)`.
+- Available colormap profiles include:
+  - `Inferno`: Deep violet $\to$ warm orange $\to$ bright yellow (standard high-contrast thermal)
+  - `Turbo`: Perceptually uniform rainbow (smooth gradient, low color banding)
+  - `Jet`: Classic blue $\to$ cyan $\to$ yellow $\to$ red
+  - `Magma`: Dark purple $\to$ pink $\to$ white
+  - `Plasma`: Deep purple $\to$ magenta $\to$ orange-yellow
+- **Color Space Conversion:** Because OpenCV's `applyColorMap` outputs in BGR format, the result is immediately transformed to RGB via `cv2.cvtColor(colored_bgr, cv2.COLOR_BGR2RGB)` to prevent blue/red inversion in web browsers.
+- **Grayscale Normalization:** `depth_to_grayscale` converts the single-channel depth map to 3-channel RGB (`cv2.COLOR_GRAY2RGB`) to ensure uniform JPEG compression and display handling across all three stream columns.
+
+### 3.12 Latency Management & Direct Hardware Synchronization
+1. **Camera Buffer Clamping (`CAP_PROP_BUFFERSIZE = 1`):**
+   Standard webcam drivers allocate multi-frame internal buffers. If AI inference and rendering take 25 ms while camera capture runs at 30 FPS (33.3 ms), buffered frames accumulate, causing progressive visual lag. Clamping buffer size to 1 forces OpenCV to immediately read the freshest incoming sensor frame.
+
+2. **Accurate CUDA Timing via `torch.cuda.synchronize()`:**
+   PyTorch executes CUDA operations asynchronously. If `time.perf_counter()` is called immediately around `model.estimate()`, it only measures CPU queue dispatch time (~0.1 ms). Calling `torch.cuda.synchronize()` forces the CPU to wait until the GPU finishes all tensor kernels, ensuring the telemetry displays genuine hardware inference latency (~10–15 ms on RTX 4070).
+
+3. **Per-Pixel Dimension Alignment:**
+   Depth Anything V2 produces depth predictions at $320\times 320$. To maintain 1:1 pixel alignment with the 640×480 camera frame:
+   ```python
+   if raw_depth.shape[:2] != frame.shape[:2]:
+       raw_depth = cv2.resize(raw_depth, (frame.shape[1], frame.shape[0]))
+   ```
+
+### 3.13 Synchronized Triple-Stream Snapshot Generator
+When the user clicks the "Snapshot" button:
+1. `st.session_state["snapshot_pending"] = True` is flagged.
+2. At the conclusion of the current frame iteration, the three synchronized feeds (`output_normal`, `output_depth`, and `output_heat`) are horizontally concatenated into a single panoramic array:
+   ```python
+   combined = np.hstack([output_normal, output_depth, output_heat])
+   ```
+3. The resulting $1920\times 480$ RGB image is converted to BGR and written to `outputs/depthfx_snapshot_YYYYMMDD_HHMMSS.png`.
+4. A non-blocking toast alert (`st.toast`) confirms the saved file path without pausing or resetting the live video stream.
+
+### 3.14 Dual Throttling & Cooperative Concurrency
+- **Cooperative Thread Yielding (`time.sleep(0.004)`):**
+  In an infinite `while True` loop, Python can monopolize the Global Interpreter Lock (GIL), starving Streamlit's Tornado/Uvicorn WebSocket communication loop. Inserting a 4 ms cooperative sleep allows the event loop to process user input (slider clicks, toggles, snapshot button) while maintaining high framerates.
+- **Dual Throttling Architecture:**
+  - **FPS Computation:** Calculated over an 0.8-second rolling window (`elapsed >= 0.8`), filtering out single-frame fluctuations.
+  - **Telemetry Grid Updates:** Throttled to 2 Hz (`now - perf_time >= 0.5`), preventing unnecessary DOM reflows and browser re-renders while video feeds update continuously.
+
+### 3.15 Session State & Reset Architecture
+Clicking the "Reset" button executes:
+```python
+for k in list(st.session_state.keys()):
+    if k not in ("snap_btn", "reset_btn"):
+        del st.session_state[k]
+st.rerun()
+```
+Preserving the widget button keys prevents Streamlit from throwing key-registration errors during rerun while resetting all internal states to clean defaults.
+
+### 3.16 CSS Design System: Split Branding, Flush Alignment & Custom Buttons
+The dashboard features an intentionally engineered dark theme inspired by technical developer consoles:
+- **Title Branding:** The brand is rendered with split coloration: `"Depth"` in vivid terminal green (`#3fb950`), `"FX"` in pure white (`#f0f6fc`), and `"Dashboard"` centered on the next line in muted silver (`#c9d1d9`).
+- **Header-to-Video Zero Margin:** The CSS rule:
+  ```css
+  [data-testid="stElementContainer"]:has([data-testid="stImage"]) {
+      padding: 0 !important;
+      margin-top: -6px !important;
+  }
+  ```
+  completely closes the vertical gap between the `.view-header` bar and the video canvas, producing a single seamless visual card.
+- **Custom Button Styling:**
+  - `action-col button` (Snapshot): Ghost-button styling with 2px solid `#58a6ff` border, subtle ambient glow (`box-shadow: 0 2px 8px rgba(88,166,255,0.15)`), and inverted fill on hover with `#0d1117` text.
+  - `reset-col button` (Reset): Industrial dark border (`#30363d`), muted text (`#8b949e`), and smooth contrast inversion on hover.
+
 ---
 
 ## 4. Technical Questions & Answers on the Streamlit Dashboard
@@ -1778,6 +1881,21 @@ Centered at the bottom of the dashboard are two dedicated action buttons:
 
 **Q: Why was temporal smoothing (EWMA) disabled in the Streamlit loop?**
 **A:** The Streamlit pipeline achieves real-time inference on modern GPUs (~10-15 ms per frame). Direct 1:1 inference produces zero motion ghosting and instantaneous response to fast hand gestures. Without EWMA lag, moving foreground objects have razor-sharp depth boundaries.
+
+**Q: Why is `torch.cuda.synchronize()` mandatory for AI latency measurement?**
+**A:** PyTorch launches CUDA operations asynchronously on GPU streams. Calling `time.perf_counter()` without `torch.cuda.synchronize()` measures only the time required for the CPU to queue the instructions (typically under 0.2 ms), not the actual execution time. Synchronization halts CPU execution until the GPU has completed the forward pass, providing accurate latency metrics.
+
+**Q: Why did you choose JPEG output format over PNG or raw numpy arrays in Streamlit's `image` component?**
+**A:** Uncompressed RGB arrays transferred over local WebSockets require significant bandwidth (~900 KB per 640×480 frame × 3 streams = 2.7 MB/frame). At 30 FPS, this would consume over 80 MB/s of WebSocket throughput, resulting in network congestion, dropped frames, and browser UI freezes. In-memory JPEG compression reduces payload size by ~85–90% with zero perceptible visual degradation.
+
+**Q: How does `aspect-ratio: 4 / 3` in CSS solve the video alignment problem in Streamlit?**
+**A:** Native camera frames are 640×480 (a 4:3 aspect ratio). By enforcing `aspect-ratio: 4 / 3` and `width: 100%` on the video container, the height automatically tracks width across any screen or column size ($H = W \times 0.75$). Paired with `object-fit: contain`, the camera image fills the container edge-to-edge with zero side letterboxing or vertical misalignment.
+
+**Q: Why is `cv2.CAP_PROP_BUFFERSIZE = 1` critical for interactive computer vision?**
+**A:** Camera drivers typically buffer 3–5 frames. If a computer vision pipeline experiences brief latency variations, the buffer fills, causing the displayed stream to lag several frames behind real-world physical events. Clamping the buffer to 1 guarantees that every frame processed is the most recent capture from the camera sensor.
+
+**Q: How does cooperative `time.sleep(0.004)` prevent thread starvation in Streamlit?**
+**A:** Python's Global Interpreter Lock (GIL) can prevent background networking threads from running during compute-heavy continuous loops. Yielding for 4 ms (~1/250th of a second) allows Streamlit's underlying Tornado/Uvicorn WebSocket server to handle incoming browser events (button presses, slider changes) smoothly without measurable impact on frame rate.
 
 **Q: How does the launcher script `run_app.bat` work?**
 **A:** It activates the virtual environment at `.venv\Scripts\activate.bat`, verifies the Python environment, and launches Streamlit with `streamlit run streamlit_app.py`, giving Windows users a single-click startup experience.
